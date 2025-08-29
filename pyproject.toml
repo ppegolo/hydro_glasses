@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hydroglass"
+version = "0.0.1"
+description = "Harmonic and anharmonic lattice-dynamics utilities (Lanczos, DSF, hydrodynamics)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
+dependencies = ["numpy>=1.23", "scipy>=1.10"]
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.7"]
+cli = ["tqdm>=4.66"]
+speed = ["numba>=0.59"]
+
+[project.urls]
+Homepage = "https://github.com/your-org/hydroglass"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hydroglass"]
+
+[tool.pytest.ini_options]
+addopts = "-ra -q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.format]
+preview = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4", "DTZ", "NPY", "SIM"]
+ignore = ["E501"]
+exclude = ["docs"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hydroglass"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+check_untyped_defs = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["numpy.*", "scipy.*", "matplotlib.*", "tqdm.*", "numba.*"]
+ignore_missing_imports = true
