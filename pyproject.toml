@@ -21,9 +21,11 @@ plots = ["matplotlib>=3.7"]
 cli = ["tqdm>=4.66"]
 speed = ["numba>=0.59"]
 docs = [
-  "mkdocs>=1.6.0",
-  "mkdocs-material>=9.5.0",
-  "mkdocstrings[python]>=0.25.0",
+  "mkdocs>=1.5",
+  "mkdocs-material>=9.5",
+  "mkdocstrings>=0.24",
+  "mkdocstrings-python>=1.7",
+  "mkdocs-jupyter>=0.24",
 ]
 
 [project.urls]
