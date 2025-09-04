@@ -8,7 +8,9 @@ RTOL = 2e-3
 ATOL = 2e-4
 
 
-def _trapz_integrate_columns(kernel_matrix: np.ndarray, omega: np.ndarray) -> np.ndarray:
+def _trapz_integrate_columns(
+    kernel_matrix: np.ndarray, omega: np.ndarray
+) -> np.ndarray:
     """Integrate each column over omega using trapezoidal rule."""
     domega = np.diff(omega)
     # Average adjacent rows to approximate integral per column
