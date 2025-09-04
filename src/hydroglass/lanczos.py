@@ -14,6 +14,7 @@ All routines use dense numpy and optionally accept scipy.sparse matrices.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Literal
 
 import numpy as np
@@ -155,45 +156,170 @@ def tridiagonal_eigh(
     return evals
 
 
+def square_root_terminator(
+    z: NDArray[np.complexfloating] | complex,
+    a_inf: float,
+    b_inf: float,
+) -> NDArray[np.complexfloating] | complex:
+    """Square-root terminator for Haydock tails with robust branch selection.
+
+    Solves the constant-tail quadratic
+        G = 1 / (z - a_inf - b_inf^2 * G)
+    giving
+        G(z) = ( (z - a_inf) - s(z) ) / (2 * b_inf^2),
+    where s(z) = sqrt( (z - a_inf)^2 - 4 b_inf^2 ).
+    The branch is chosen so that Im(s) has the same sign as Im(z), which
+    ensures the retarded Green function has Im(G) < 0 when Im(z) > 0.
+
+    Args:
+        z: Complex frequency array or scalar (omega + i * eta).
+        a_inf: Asymptotic alpha value.
+        b_inf: Asymptotic beta value (non-negative).
+
+    Returns:
+        Terminator value G_tail(z) for an infinite constant-coefficient tail.
+
+    Raises:
+        ValueError: If inputs are not finite or b_inf is negative.
+    """
+    if not np.isfinite(a_inf) or not np.isfinite(b_inf):
+        raise ValueError("a_inf and b_inf must be finite.")
+    if b_inf < 0.0:
+        raise ValueError("b_inf must be non-negative.")
+
+    z_arr = np.asarray(z, dtype=np.complex128)
+    delta = z_arr - a_inf
+    s = np.lib.scimath.sqrt(delta * delta - 4.0 * (b_inf**2))
+
+    # Choose branch so that Im(s) has the same sign as Im(z).
+    im_z = np.imag(z_arr)
+    im_s = np.imag(s)
+
+    # Where sign(Im s) != sign(Im z), flip s -> -s.
+    # Treat zeros in Im(z) as upper half-plane by default (retarded).
+    desired_sign = np.where(im_z >= 0.0, 1.0, -1.0)
+    flip_mask = np.sign(im_s) != desired_sign
+    if np.any(flip_mask):
+        s = np.where(flip_mask, -s, s)
+
+    g = (delta - s) / (2.0 * (b_inf**2))
+    return g
+
+
+def estimate_tail_parameters(
+    alpha: NDArray[np.floating], beta: NDArray[np.floating], tail_window: int = 8
+) -> tuple[float, float]:
+    """Estimate a_inf and b_inf from the last few Lanczos coefficients.
+
+    Averages the last 'tail_window' entries of alpha and beta to produce a
+    simple and robust estimate of the asymptotic tail used by the terminator.
+
+    Args:
+        alpha: Array of alpha coefficients with shape (M,).
+        beta: Array of beta coefficients with shape (M - 1,).
+        tail_window: Number of trailing entries to average.
+
+    Returns:
+        Tuple (a_inf, b_inf) with non-negative b_inf.
+
+    Raises:
+        ValueError: If input arrays are too short or contain non-finite values.
+    """
+    if alpha.ndim != 1 or (beta.ndim != 1 and beta.size != 0):
+        raise ValueError("alpha must be (M,), beta must be (M-1,) or empty if M==1.")
+    if alpha.size == 0:
+        raise ValueError("alpha cannot be empty.")
+    if not np.all(np.isfinite(alpha)) or not np.all(np.isfinite(beta)):
+        raise ValueError("alpha and beta must be finite.")
+
+    n_alpha = max(1, min(tail_window, alpha.size))
+    n_beta = max(1, min(tail_window, beta.size)) if beta.size > 0 else 0
+
+    a_inf = float(np.mean(alpha[-n_alpha:]))
+    b_inf = float(np.mean(np.abs(beta[-n_beta:]))) if n_beta > 0 else 0.0
+    b_inf = max(0.0, b_inf)
+    return a_inf, b_inf
+
+
 def haydock_greens_function(
     alpha: NDArray[np.floating],
     beta: NDArray[np.floating],
     omega: NDArray[np.floating],
     eta: float,
+    terminator: (
+        Callable[[NDArray[np.complexfloating]], NDArray[np.complexfloating]] | None
+    ) = None,
+    tail_coupling_beta: float | None = None,
 ) -> NDArray[np.complexfloating]:
-    """Evaluate the Haydock continued fraction Green's function.
+    """Evaluate Haydock continued-fraction Green function G(omega + i * eta).
 
-    Computes G(z) = <v0 | (z I - H)^{-1} | v0> where z = omega + i eta.
+    If 'terminator' is provided, it is used as the complex tail G_tail(z) at the
+    bottom of the finite continued fraction, improving accuracy for small M.
+    The last level is then:
+        g_{M-1}(z) = 1 / (z - alpha[M-1] - beta_tail^2 * G_tail(z)),
+    where beta_tail defaults to beta[-1] when available, or can be passed
+    explicitly through 'tail_coupling_beta'.
 
     Args:
-        alpha: Tridiagonal diagonal entries from Lanczos, shape (m,).
-        beta: Tridiagonal subdiagonal entries, shape (m-1,).
-        omega: Real frequency grid, shape (nomega,).
-        eta: Positive imaginary shift for causal Green's function.
+        alpha: Array of alpha coefficients with shape (M,).
+        beta: Array of beta coefficients with shape (M - 1,).
+        omega: Real frequency grid with shape (Nw,).
+        eta: Positive small imaginary part.
+        terminator: Optional callable tail G_tail(z). It must accept a complex
+            array z with shape (Nw,) and return an array of the same shape.
+        tail_coupling_beta: Optional coupling used at the last level when a
+            terminator is provided. If None and beta.size > 0, defaults to
+            float(beta[-1]). If both None and beta.size == 0, defaults to 0.0.
 
     Returns:
-        Complex array G(omega + i eta) with shape (nomega,).
+        Complex array G(z) with shape (Nw,).
 
     Raises:
-        ValueError: If eta is not positive or shapes are inconsistent.
+        ValueError: On invalid inputs.
     """
     if eta <= 0.0 or not np.isfinite(eta):
         raise ValueError("eta must be positive and finite.")
-    a = np.asarray(alpha, dtype=float)
-    b = np.asarray(beta, dtype=float)
-    w = np.asarray(omega, dtype=float)
-    m = a.size
-    if b.size not in (0, m - 1):
-        raise ValueError("beta must have shape (m-1,) or be empty when m=1.")
-    z = w.astype(np.complex128) + 1j * float(eta)
-    # Backward continued fraction evaluation
-    g = np.zeros_like(z, dtype=np.complex128)
-    for j in range(m - 1, -1, -1):
-        if j == m - 1:
-            g = 1.0 / (z - a[j])
+    if alpha.ndim != 1:
+        raise ValueError("alpha must be one dimensional.")
+    if beta.ndim != 1 and beta.size != 0:
+        raise ValueError("beta must be one dimensional or empty.")
+    if alpha.size == 0:
+        raise ValueError("alpha cannot be empty.")
+    if beta.size not in (0, alpha.size - 1):
+        raise ValueError("beta must have length M-1 or be empty if M==1.")
+
+    z = omega.astype(np.float64, copy=False) + 1j * float(eta)
+    n_levels = alpha.size
+
+    # Determine tail coupling for the last level when a terminator is used.
+    if terminator is not None:
+        if tail_coupling_beta is None:
+            b_tail = float(beta[-1]) if beta.size > 0 else 0.0
         else:
-            g = 1.0 / (z - a[j] - (b[j] ** 2) * g)
-    return g
+            b_tail = float(tail_coupling_beta)
+        g_next = terminator(z)  # this is G_tail(z)
+    else:
+        b_tail = 0.0
+        g_next = np.zeros_like(z, dtype=np.complex128)
+
+    # Backward recurrence for continued fraction:
+    # g_j = 1 / (z - alpha_j - beta_j^2 * g_{j+1}), j = M-2, ..., 0
+    # and at j = M-1 (last level):
+    #   if terminator:
+    #       g_{M-1} = 1 / (z - alpha_{M-1} - b_tail^2 * g_tail)
+    #   else:
+    #       g_{M-1} = 1 / (z - alpha_{M-1})
+    for j in range(n_levels - 1, -1, -1):
+        if j == n_levels - 1:
+            if terminator is None:
+                g = 1.0 / (z - alpha[j])
+            else:
+                g = 1.0 / (z - alpha[j] - (b_tail**2) * g_next)
+        else:
+            g = 1.0 / (z - alpha[j] - (beta[j] ** 2) * g_next)
+        g_next = g
+
+    return g_next
 
 
 def haydock_spectral_density(
@@ -201,22 +327,30 @@ def haydock_spectral_density(
     beta: NDArray[np.floating],
     omega: NDArray[np.floating],
     eta: float,
+    terminator: (
+        Callable[[NDArray[np.complexfloating]], NDArray[np.complexfloating]] | None
+    ) = None,
+    tail_coupling_beta: float | None = None,
 ) -> NDArray[np.floating]:
-    """Spectral density rho(omega) associated with the starting vector.
-
-    rho(omega) = -1/pi * Im G(omega + i eta)
+    """Return rho(omega) = -1/pi * Im G(omega + i * eta) using Haydock CF.
 
     Args:
-        alpha: Tridiagonal diagonal entries from Lanczos, shape (m,).
-        beta: Tridiagonal subdiagonal entries, shape (m-1,).
-        omega: Real frequency grid, shape (nomega,).
-        eta: Positive imaginary shift.
+        alpha: Array of alpha coefficients with shape (M,).
+        beta: Array of beta coefficients with shape (M - 1,).
+        omega: Real frequency grid with shape (Nw,).
+        eta: Positive small imaginary part.
+        terminator: Optional terminator callable passed to haydock_greens_function.
+        tail_coupling_beta: Optional coupling used at the last level with terminator.
 
     Returns:
-        rho(omega) with shape (nomega,). The integral over omega is approximately 1
-        if the starting vector used in the Lanczos run was normalized.
+        Real array rho(omega) with shape (Nw,).
     """
-    G = haydock_greens_function(alpha=alpha, beta=beta, omega=omega, eta=eta)
-    rho = -np.imag(G) / np.pi
-    rho = np.clip(rho, a_min=0.0, a_max=None)
-    return rho.astype(float, copy=False)
+    G = haydock_greens_function(
+        alpha=alpha,
+        beta=beta,
+        omega=omega,
+        eta=eta,
+        terminator=terminator,
+        tail_coupling_beta=tail_coupling_beta,
+    )
+    return (-1.0 / np.pi) * np.imag(G)
