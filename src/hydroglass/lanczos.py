@@ -21,21 +21,47 @@ import numpy as np
 from numpy.typing import NDArray
 
 try:
-    import scipy.sparse as sp
+    import scipy as sp  # type: ignore
+    from scipy.sparse.linalg import LinearOperator  # type: ignore
+except Exception:  # pragma: no cover - SciPy missing
+    sp = None  # type: ignore
+    LinearOperator = None  # type: ignore
 
-    SCIPY_OK = True
-except Exception:  # pragma: no cover - optional path
-    SCIPY_OK = False
 
 logger = logging.getLogger(__name__)
 
 
-def _matvec(matrix_or_linear_operator, x: NDArray[np.floating]) -> NDArray[np.floating]:
-    """Apply a matrix or LinearOperator-like to a vector."""
-    if SCIPY_OK and sp.issparse(matrix_or_linear_operator):
-        return matrix_or_linear_operator @ x
-    # numpy.ndarray or any object supporting @
-    return matrix_or_linear_operator @ x
+def _matvec(matrix_or_linear_operator: object, x: np.ndarray) -> np.ndarray:
+    """
+    Apply the operator `matrix_or_linear_operator` to vector `x`.
+
+    Supported kinds (checked in this order):
+      1) Callable: f(x) -> y
+      2) SciPy LinearOperator (or duck-typed: has .matvec)
+      3) SciPy sparse matrix (if SciPy is present)
+      4) Dense ndarray / any object supporting '@'
+    """
+    # 1) Plain callable: f(x) -> y
+    if callable(matrix_or_linear_operator):
+        y = matrix_or_linear_operator(x)
+        return np.asarray(y, dtype=float)
+
+    # 2) LinearOperator-like: has .matvec
+    if hasattr(matrix_or_linear_operator, "matvec"):
+        y = matrix_or_linear_operator.matvec(x)  # type: ignore[attr-defined]
+        return np.asarray(y, dtype=float)
+
+    # 3) Sparse matrix (guarded so it never breaks when SciPy isn't available)
+    try:
+        import scipy.sparse as _sp  # local import to avoid hard dependency
+
+        if hasattr(_sp, "issparse") and _sp.issparse(matrix_or_linear_operator):
+            return np.asarray(matrix_or_linear_operator @ x, dtype=float)
+    except Exception:
+        pass  # SciPy not available or issparse missing -> skip
+
+    # 4) Dense array-like (or anything that implements @)
+    return np.asarray(matrix_or_linear_operator @ x, dtype=float)
 
 
 def lanczos_tridiagonal(
