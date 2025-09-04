@@ -271,8 +271,8 @@ class PhononModel:
 
         Returns:
             Tuple (omega, sqw) where omega has shape (nomega,) and sqw has shape:
-              - (nomega,) if q_vectors was shape (3,)
-              - (nomega, nq) if q_vectors was shape (nq, 3)
+                - (nomega,) if q_vectors was shape (3,)
+                - (nomega, nq) if q_vectors was shape (nq, 3)
 
         Raises:
             ValueError: On invalid shapes, missing omega mesh, or invalid kernel params.
